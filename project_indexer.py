@@ -354,19 +354,31 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
     
     # Generate project cards HTML
     cards_html = []
+    table_rows_html = []
+    
     for project_path, data in sorted_projects:
         name = html.escape(data.get('name', project_path))
         summary = html.escape(data.get('summary', ''))
         path_escaped = html.escape(project_path)
         
+        # Card view
         card = f'''    <article class="project-card" data-name="{name.lower()}" data-summary="{summary.lower()}">
       <h2><a href="{path_escaped}">{name}</a></h2>
       <p class="summary">{summary if summary else '<em>No description available</em>'}</p>
       <p class="path">{path_escaped}</p>
     </article>'''
         cards_html.append(card)
+        
+        # Table row
+        row = f'''      <tr class="project-row" data-name="{name.lower()}" data-summary="{summary.lower()}">
+        <td class="col-name"><a href="{path_escaped}">{name}</a></td>
+        <td class="col-summary">{summary if summary else '<em>No description</em>'}</td>
+        <td class="col-path">{path_escaped}</td>
+      </tr>'''
+        table_rows_html.append(row)
     
     cards_content = '\n'.join(cards_html) if cards_html else '    <p class="no-projects">No projects found.</p>'
+    table_rows_content = '\n'.join(table_rows_html) if table_rows_html else '''      <tr><td colspan="3" class="no-projects">No projects found.</td></tr>'''
     
     html_template = f'''<!DOCTYPE html>
 <html lang="en">
@@ -444,12 +456,17 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       flex-wrap: wrap;
     }}
     
-    .search-container {{
+    .toolbar {{
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      flex-wrap: wrap;
       margin-bottom: 1.5rem;
     }}
     
     #search {{
-      width: 100%;
+      flex: 1;
+      min-width: 200px;
       max-width: 400px;
       padding: 0.75rem 1rem;
       font-size: 1rem;
@@ -469,9 +486,52 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       color: var(--text-muted);
     }}
     
-    .projects {{
+    .view-toggle {{
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }}
+    
+    .view-toggle button {{
+      padding: 0.5rem 0.75rem;
+      border: none;
+      background: var(--bg-secondary);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      font-size: 0.875rem;
+      transition: background 0.15s ease, color 0.15s ease;
+    }}
+    
+    .view-toggle button:not(:last-child) {{
+      border-right: 1px solid var(--border);
+    }}
+    
+    .view-toggle button:hover {{
+      background: var(--bg-tertiary);
+    }}
+    
+    .view-toggle button.active {{
+      background: var(--accent);
+      color: #fff;
+    }}
+    
+    .view-toggle svg {{
+      width: 16px;
+      height: 16px;
+    }}
+    
+    /* Card View */
+    .projects-cards {{
       display: grid;
       gap: 1rem;
+    }}
+    
+    .projects-cards.hidden {{
+      display: none;
     }}
     
     .project-card {{
@@ -527,6 +587,87 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     }}
     
+    /* Table View */
+    .projects-table-wrapper {{
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-secondary);
+    }}
+    
+    .projects-table-wrapper.hidden {{
+      display: none;
+    }}
+    
+    .projects-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9375rem;
+    }}
+    
+    .projects-table th,
+    .projects-table td {{
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }}
+    
+    .projects-table th {{
+      background: var(--bg-tertiary);
+      font-weight: 600;
+      font-size: 0.8125rem;
+      text-transform: uppercase;
+      letter-spacing: 0.025em;
+      color: var(--text-secondary);
+      position: sticky;
+      top: 0;
+    }}
+    
+    .projects-table tbody tr:last-child td {{
+      border-bottom: none;
+    }}
+    
+    .projects-table tbody tr:hover {{
+      background: var(--bg-tertiary);
+    }}
+    
+    .projects-table tbody tr.hidden {{
+      display: none;
+    }}
+    
+    .projects-table .col-name {{
+      width: 20%;
+      min-width: 150px;
+      font-weight: 500;
+    }}
+    
+    .projects-table .col-name a {{
+      color: var(--accent);
+      text-decoration: none;
+    }}
+    
+    .projects-table .col-name a:hover {{
+      color: var(--accent-hover);
+      text-decoration: underline;
+    }}
+    
+    .projects-table .col-summary {{
+      color: var(--text-secondary);
+      max-width: 500px;
+    }}
+    
+    .projects-table .col-summary em {{
+      color: var(--text-muted);
+    }}
+    
+    .projects-table .col-path {{
+      width: 25%;
+      min-width: 150px;
+      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }}
+    
     .no-projects {{
       text-align: center;
       color: var(--text-secondary);
@@ -560,15 +701,49 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       </div>
     </header>
     
-    <div class="search-container">
+    <div class="toolbar">
       <input type="text" id="search" placeholder="Search projects..." autocomplete="off">
+      <div class="view-toggle">
+        <button id="btn-cards" class="active" title="Card view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7" rx="1"/>
+            <rect x="14" y="3" width="7" height="7" rx="1"/>
+            <rect x="3" y="14" width="7" height="7" rx="1"/>
+            <rect x="14" y="14" width="7" height="7" rx="1"/>
+          </svg>
+          Cards
+        </button>
+        <button id="btn-table" title="Table view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+          Table
+        </button>
+      </div>
     </div>
     
     <div id="results-count" class="results-count"></div>
     
-    <section class="projects" id="projects">
+    <section class="projects-cards" id="projects-cards">
 {cards_content}
     </section>
+    
+    <div class="projects-table-wrapper hidden" id="projects-table-wrapper">
+      <table class="projects-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Path</th>
+          </tr>
+        </thead>
+        <tbody id="projects-table">
+{table_rows_content}
+        </tbody>
+      </table>
+    </div>
     
     <footer>
       Generated by Project README Indexer
@@ -578,15 +753,47 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
   <script>
     (function() {{
       const search = document.getElementById('search');
-      const projects = document.getElementById('projects');
-      const cards = projects.querySelectorAll('.project-card');
+      const cardsContainer = document.getElementById('projects-cards');
+      const tableWrapper = document.getElementById('projects-table-wrapper');
+      const tableBody = document.getElementById('projects-table');
+      const cards = cardsContainer.querySelectorAll('.project-card');
+      const rows = tableBody.querySelectorAll('.project-row');
       const resultsCount = document.getElementById('results-count');
+      const btnCards = document.getElementById('btn-cards');
+      const btnTable = document.getElementById('btn-table');
       const totalCount = cards.length;
+      
+      // View toggle
+      let currentView = localStorage.getItem('projectIndexView') || 'cards';
+      
+      function setView(view) {{
+        currentView = view;
+        localStorage.setItem('projectIndexView', view);
+        
+        if (view === 'cards') {{
+          cardsContainer.classList.remove('hidden');
+          tableWrapper.classList.add('hidden');
+          btnCards.classList.add('active');
+          btnTable.classList.remove('active');
+        }} else {{
+          cardsContainer.classList.add('hidden');
+          tableWrapper.classList.remove('hidden');
+          btnCards.classList.remove('active');
+          btnTable.classList.add('active');
+        }}
+      }}
+      
+      btnCards.addEventListener('click', () => setView('cards'));
+      btnTable.addEventListener('click', () => setView('table'));
+      
+      // Initialize view
+      setView(currentView);
       
       function updateResults() {{
         const query = search.value.toLowerCase().trim();
         let visible = 0;
         
+        // Filter cards
         cards.forEach(card => {{
           const name = card.dataset.name || '';
           const summary = card.dataset.summary || '';
@@ -599,6 +806,20 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
           
           card.classList.toggle('hidden', !matches);
           if (matches) visible++;
+        }});
+        
+        // Filter table rows
+        rows.forEach(row => {{
+          const name = row.dataset.name || '';
+          const summary = row.dataset.summary || '';
+          const path = row.querySelector('.col-path')?.textContent?.toLowerCase() || '';
+          
+          const matches = !query || 
+            name.includes(query) || 
+            summary.includes(query) || 
+            path.includes(query);
+          
+          row.classList.toggle('hidden', !matches);
         }});
         
         if (query) {{
