@@ -1,0 +1,20 @@
+[project]
+name = "project-indexer"
+version = "0.1.0"
+description = "Scan a directory tree for projects with READMEs and generate an interactive HTML index."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# The indexer is a single standalone script, not an installable package — don't
+# let uv try to build/install it into the test environment.
+package = false
+
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so tests can `import project_indexer`.
+pythonpath = ["."]
+testpaths = ["tests"]

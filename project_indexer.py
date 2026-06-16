@@ -15,6 +15,7 @@ Options:
     --cache PATH        Cache file path (default: .project_index_cache.json in root)
     --title STRING      Title for the index page (default: "Project Index")
     --exclude DIRNAME   Directory names to exclude (repeatable; has sensible defaults)
+    --fetch             Run `git fetch` per repo before comparing (network; slower)
 
 Examples:
     # Index current directory
@@ -39,7 +40,9 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -341,6 +344,156 @@ def process_project(project_path: str, readme_path: Path, root: Path) -> dict:
     }
 
 
+# Timeouts (seconds) for git subprocess calls. `fetch` talks to the network so it
+# gets a generous budget; every other query is local and should return instantly.
+GIT_QUERY_TIMEOUT = 5
+GIT_FETCH_TIMEOUT = 60
+
+
+def _run_git(directory: Path, args: list, timeout: int = GIT_QUERY_TIMEOUT) -> tuple:
+    """
+    Run a git command inside `directory` and return (ok, stdout).
+
+    `ok` is True only when git is available and exits 0. Every failure mode
+    (git not installed, non-zero exit, hung command) collapses to (False, '')
+    so callers branch on a single boolean instead of catching exceptions.
+    """
+    try:
+        result = subprocess.run(
+            ['git', '-C', str(directory), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # FileNotFoundError => git binary missing; TimeoutExpired => hung command.
+        return False, ''
+
+    return result.returncode == 0, result.stdout.strip()
+
+
+def get_git_status(project_dir: Path, do_fetch: bool = False) -> dict:
+    """
+    Determine how a project's local branch compares to its remote branch.
+
+    By default the comparison is made against the locally-stored remote-tracking
+    ref (`@{upstream}`), so it is instant and offline but only as fresh as the
+    last `git fetch`. Passing `do_fetch=True` runs a network `git fetch` first
+    for an up-to-the-second comparison (slower, and may require auth).
+
+    Status reflects whichever git repository *contains* `project_dir`. When each
+    project is its own repo this is exact; sibling folders of a single shared
+    repo will each report that one repo's status.
+
+    Returns {state, branch, upstream, ahead, behind} where `state` is one of:
+    not_repo, error, detached, no_remote, up_to_date, ahead, behind, diverged.
+    """
+    status = {'state': 'not_repo', 'branch': None, 'upstream': None,
+              'ahead': 0, 'behind': 0}
+
+    # 1. Is this path inside a git work tree at all?
+    ok, out = _run_git(project_dir, ['rev-parse', '--is-inside-work-tree'])
+    if not ok or out != 'true':
+        return status
+
+    # 2. Optionally refresh remote-tracking refs from the network. A failure here
+    #    (offline, auth prompt, timeout) is non-fatal: we fall back to comparing
+    #    against whatever was last fetched rather than aborting the whole run.
+    if do_fetch:
+        _run_git(project_dir, ['fetch', '--quiet'], timeout=GIT_FETCH_TIMEOUT)
+
+    # 3. Current branch. A detached HEAD has no branch to track.
+    ok, branch = _run_git(project_dir, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    status['branch'] = branch or None
+    if not ok or not branch or branch == 'HEAD':
+        status['state'] = 'detached'
+        return status
+
+    # 4. Upstream (remote-tracking) branch. Its absence means there is nothing to
+    #    compare against (no `git branch --set-upstream-to` configured).
+    ok, upstream = _run_git(
+        project_dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']
+    )
+    if not ok or not upstream:
+        status['state'] = 'no_remote'
+        return status
+    status['upstream'] = upstream
+
+    # 5. Count divergence in one call. For `@{u}...HEAD` the left count is commits
+    #    the upstream has that we lack (behind); the right count is commits we have
+    #    that the upstream lacks (ahead).
+    ok, counts = _run_git(
+        project_dir, ['rev-list', '--left-right', '--count', '@{u}...HEAD']
+    )
+    if ok:
+        try:
+            behind, ahead = (int(n) for n in counts.split())
+        except ValueError:
+            ok = False
+    if not ok:
+        status['state'] = 'error'
+        return status
+
+    status['ahead'] = ahead
+    status['behind'] = behind
+    if ahead and behind:
+        status['state'] = 'diverged'
+    elif ahead:
+        status['state'] = 'ahead'
+    elif behind:
+        status['state'] = 'behind'
+    else:
+        status['state'] = 'up_to_date'
+
+    return status
+
+
+def collect_git_statuses(project_dirs: dict, do_fetch: bool = False) -> dict:
+    """
+    Compute git status for many projects concurrently.
+
+    `project_dirs` maps project_path -> absolute directory Path. The work is I/O
+    bound (each call spawns git subprocesses), so a thread pool keeps wall-clock
+    time low — essential when `do_fetch` adds a network round-trip per repo.
+    Returns project_path -> status dict (see `get_git_status`).
+    """
+    if not project_dirs:
+        return {}
+
+    paths = list(project_dirs.items())
+    workers = min(16, len(paths))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        statuses = pool.map(
+            lambda dir_: get_git_status(dir_, do_fetch), (d for _, d in paths)
+        )
+        return {project_path: status
+                for (project_path, _), status in zip(paths, statuses)}
+
+
+def git_status_badge(git: dict) -> tuple:
+    """
+    Map a git status dict to a (state, label) pair for the table badge.
+
+    `state` is reused as a CSS modifier class (`status-<state>`); `label` is the
+    human-readable text. Counts are folded into the label so a single glance
+    tells you both the condition and its magnitude.
+    """
+    state = git.get('state', 'not_repo')
+    ahead = git.get('ahead', 0)
+    behind = git.get('behind', 0)
+
+    labels = {
+        'up_to_date': 'Up to date',
+        'ahead': f'Ahead {ahead}',
+        'behind': f'Behind {behind}',
+        'diverged': f'Diverged ↑{ahead} ↓{behind}',
+        'no_remote': 'No remote',
+        'detached': 'Detached',
+    }
+    # not_repo / error (and any unknown state) render as a muted em dash.
+    return state, labels.get(state, '—')
+
+
 def generate_html(cache: dict, title: str, root: Path) -> str:
     """Generate the index.html content from cache data."""
     # Sort projects alphabetically by name (case-insensitive)
@@ -360,7 +513,15 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         name = html.escape(data.get('name', project_path))
         summary = html.escape(data.get('summary', ''))
         path_escaped = html.escape(project_path)
-        
+
+        # Remote sync status (table only). git data is attached fresh each run;
+        # absent => render a muted placeholder.
+        git = data.get('git', {})
+        status_state, status_label = git_status_badge(git)
+        status_label = html.escape(status_label)
+        branch = git.get('branch')
+        status_title = html.escape(f'branch: {branch}') if branch else ''
+
         # Card view
         card = f'''    <article class="project-card" data-name="{name.lower()}" data-summary="{summary.lower()}">
       <h2><a href="{path_escaped}">{name}</a></h2>
@@ -370,15 +531,16 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         cards_html.append(card)
         
         # Table row
-        row = f'''      <tr class="project-row" data-name="{name.lower()}" data-summary="{summary.lower()}">
+        row = f'''      <tr class="project-row" data-name="{name.lower()}" data-summary="{summary.lower()}" data-status="{status_state}">
         <td class="col-name"><a href="{path_escaped}">{name}</a></td>
         <td class="col-summary">{summary if summary else '<em>No description</em>'}</td>
         <td class="col-path">{path_escaped}</td>
+        <td class="col-status"><span class="status-badge status-{status_state}" title="{status_title}">{status_label}</span></td>
       </tr>'''
         table_rows_html.append(row)
     
     cards_content = '\n'.join(cards_html) if cards_html else '    <p class="no-projects">No projects found.</p>'
-    table_rows_content = '\n'.join(table_rows_html) if table_rows_html else '''      <tr><td colspan="3" class="no-projects">No projects found.</td></tr>'''
+    table_rows_content = '\n'.join(table_rows_html) if table_rows_html else '''      <tr><td colspan="4" class="no-projects">No projects found.</td></tr>'''
     
     html_template = f'''<!DOCTYPE html>
 <html lang="en">
@@ -398,6 +560,11 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       --accent-hover: #79b8ff;
       --border: #30363d;
       --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      /* Remote-status badge colors (dark theme). */
+      --status-success: #3fb950;
+      --status-info: #58a6ff;
+      --status-warning: #d29922;
+      --status-danger: #f85149;
     }}
     
     @media (prefers-color-scheme: light) {{
@@ -412,6 +579,11 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         --accent-hover: #0550ae;
         --border: #d0d7de;
         --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        /* Remote-status badge colors (light theme, higher-contrast variants). */
+        --status-success: #1a7f37;
+        --status-info: #0969da;
+        --status-warning: #9a6700;
+        --status-danger: #cf222e;
       }}
     }}
     
@@ -661,13 +833,69 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
     }}
     
     .projects-table .col-path {{
-      width: 25%;
+      width: 22%;
       min-width: 150px;
       font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
       font-size: 0.8125rem;
       color: var(--text-muted);
     }}
-    
+
+    .projects-table .col-status {{
+      width: 1%;
+      white-space: nowrap;
+    }}
+
+    /* Remote-status pill: condition is encoded by color, magnitude by the label. */
+    .status-badge {{
+      display: inline-flex;
+      align-items: center;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      line-height: 1.4;
+      white-space: nowrap;
+      border: 1px solid transparent;
+    }}
+
+    /* Healthy: local matches its remote-tracking branch. */
+    .status-up_to_date {{
+      color: var(--status-success);
+      background: color-mix(in srgb, var(--status-success) 14%, transparent);
+      border-color: color-mix(in srgb, var(--status-success) 35%, transparent);
+    }}
+
+    /* Local has commits not yet pushed. */
+    .status-ahead {{
+      color: var(--status-info);
+      background: color-mix(in srgb, var(--status-info) 14%, transparent);
+      border-color: color-mix(in srgb, var(--status-info) 35%, transparent);
+    }}
+
+    /* Remote has commits not yet pulled. */
+    .status-behind {{
+      color: var(--status-warning);
+      background: color-mix(in srgb, var(--status-warning) 14%, transparent);
+      border-color: color-mix(in srgb, var(--status-warning) 35%, transparent);
+    }}
+
+    /* Both sides moved on — needs a merge/rebase. */
+    .status-diverged {{
+      color: var(--status-danger);
+      background: color-mix(in srgb, var(--status-danger) 14%, transparent);
+      border-color: color-mix(in srgb, var(--status-danger) 35%, transparent);
+    }}
+
+    /* No tracking branch, detached HEAD, not a repo, or query error: muted. */
+    .status-no_remote,
+    .status-detached,
+    .status-not_repo,
+    .status-error {{
+      color: var(--text-muted);
+      background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+      border-color: var(--border);
+    }}
+
     .no-projects {{
       text-align: center;
       color: var(--text-secondary);
@@ -817,6 +1045,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
             <th>Name</th>
             <th>Description</th>
             <th>Path</th>
+            <th>Remote status</th>
           </tr>
         </thead>
         <tbody id="projects-table">
@@ -1118,7 +1347,13 @@ Examples:
         action='store_true',
         help='Print verbose output'
     )
-    
+    parser.add_argument(
+        '--fetch',
+        action='store_true',
+        help='Run `git fetch` per repo before comparing branches '
+             '(network access; slower, but reflects the true remote state)'
+    )
+
     args = parser.parse_args()
     
     # Resolve paths
@@ -1177,9 +1412,21 @@ Examples:
         for old_path in set(cache.keys()) - set(discovered.keys()):
             print(f"  Removed: {old_path}")
     
-    # Save updated cache
+    # Save updated cache (README metadata only). Git status is volatile and is
+    # intentionally NOT persisted: it is recomputed fresh on every run below so
+    # the table never shows a stale sync state.
     save_cache(cache_path, new_cache)
-    
+
+    # Collect git remote-sync status for every project and attach it in-memory.
+    # Done after the save so the on-disk cache stays README-only; the HTML still
+    # gets current data. Runs concurrently for speed (especially with --fetch).
+    project_dirs = {p: root / p for p in new_cache}
+    git_statuses = collect_git_statuses(project_dirs, do_fetch=args.fetch)
+    for project_path, status in git_statuses.items():
+        new_cache[project_path]['git'] = status
+        if args.verbose:
+            print(f"  Git: {project_path} -> {status['state']}")
+
     # Generate HTML
     html_content = generate_html(new_cache, args.title, root)
     
