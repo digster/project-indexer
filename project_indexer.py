@@ -826,6 +826,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
     .projects-table .col-summary {{
       color: var(--text-secondary);
       max-width: 500px;
+      overflow-wrap: anywhere;
     }}
     
     .projects-table .col-summary em {{
@@ -838,6 +839,11 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
       font-size: 0.8125rem;
       color: var(--text-muted);
+      /* Long, space-free paths must be allowed to break, otherwise their
+         min-content width forces the table past the container and triggers the
+         wrapper's horizontal scrollbar. `anywhere` (unlike `break-word`) shrinks
+         the cell's intrinsic min-width, which is what actually fits the table. */
+      overflow-wrap: anywhere;
     }}
 
     .projects-table .col-status {{
