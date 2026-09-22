@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """
 Project README Indexer
 ======================
@@ -7,7 +7,7 @@ A dependency-free Python script that scans subfolders for README files,
 extracts project names and summaries, and generates an incremental index.html.
 
 Usage:
-    python3 project_indexer.py [OPTIONS]
+    uv run project_indexer.py [OPTIONS]
 
 Options:
     --root PATH         Root directory to scan (default: current directory)
@@ -19,13 +19,13 @@ Options:
 
 Examples:
     # Index current directory
-    python3 project_indexer.py
+    uv run project_indexer.py
 
     # Index a specific directory with custom title
-    python3 project_indexer.py --root ~/projects --title "My Projects"
+    uv run project_indexer.py --root ~/projects --title "My Projects"
 
     # Exclude additional directories
-    python3 project_indexer.py --exclude dist --exclude build
+    uv run project_indexer.py --exclude dist --exclude build
 
 Incremental Behavior:
     - On first run, scans all projects and creates cache + index.html
@@ -522,8 +522,16 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         branch = git.get('branch')
         status_title = html.escape(f'branch: {branch}') if branch else ''
 
+        # Both views expose identical metadata. The client pairs each card with
+        # its row, then filters/sorts that pair once so pagination cannot drift.
+        attributes = (
+            f'data-name="{name.lower()}" data-summary="{summary.lower()}" '
+            f'data-path="{path_escaped}" data-status="{html.escape(status_state)}" '
+            f'data-status-label="{status_label}"'
+        )
+
         # Card view
-        card = f'''    <article class="project-card" data-name="{name.lower()}" data-summary="{summary.lower()}">
+        card = f'''    <article class="project-card" {attributes}>
       <h2><a href="{path_escaped}">{name}</a></h2>
       <p class="summary">{summary if summary else '<em>No description available</em>'}</p>
       <p class="path">{path_escaped}</p>
@@ -531,7 +539,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         cards_html.append(card)
         
         # Table row
-        row = f'''      <tr class="project-row" data-name="{name.lower()}" data-summary="{summary.lower()}" data-status="{status_state}">
+        row = f'''      <tr class="project-row" {attributes}>
         <td class="col-name"><a href="{path_escaped}">{name}</a></td>
         <td class="col-summary">{summary if summary else '<em>No description</em>'}</td>
         <td class="col-path">{path_escaped}</td>
@@ -656,6 +664,36 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
     
     #search::placeholder {{
       color: var(--text-muted);
+    }}
+
+    .status-filter {{
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      max-width: 100%;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }}
+
+    .status-filter select {{
+      max-width: 100%;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      font: inherit;
+      cursor: pointer;
+    }}
+
+    .status-filter label {{
+      white-space: nowrap;
+    }}
+
+    button:focus-visible, select:focus-visible {{
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }}
     
     .view-toggle {{
@@ -793,6 +831,25 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       color: var(--text-secondary);
       position: sticky;
       top: 0;
+    }}
+
+    .sort-button {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-transform: inherit;
+      letter-spacing: inherit;
+      white-space: nowrap;
+      cursor: pointer;
+    }}
+
+    .sort-button:hover, th[aria-sort] .sort-button {{
+      color: var(--accent);
     }}
     
     .projects-table tbody tr:last-child td {{
@@ -953,6 +1010,8 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
     .pagination {{
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
+      max-width: 100%;
       gap: 0.25rem;
     }}
     
@@ -1016,7 +1075,21 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
     </header>
     
     <div class="toolbar">
-      <input type="text" id="search" placeholder="Search projects..." autocomplete="off">
+      <input type="text" id="search" aria-label="Search projects" placeholder="Search projects..." autocomplete="off">
+      <div class="status-filter">
+        <label for="status-filter">Remote status</label>
+        <select id="status-filter">
+          <option value="">All statuses</option>
+          <option value="up_to_date">Up to date</option>
+          <option value="ahead">Ahead</option>
+          <option value="behind">Behind</option>
+          <option value="diverged">Diverged</option>
+          <option value="no_remote">No remote</option>
+          <option value="detached">Detached</option>
+          <option value="not_repo">Not a repository / Git unavailable</option>
+          <option value="error">Status unavailable</option>
+        </select>
+      </div>
       <div class="view-toggle">
         <button id="btn-cards" class="active" title="Card view">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1038,7 +1111,8 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       </div>
     </div>
     
-    <div id="results-count" class="results-count"></div>
+    <div id="results-count" class="results-count" role="status" aria-live="polite"></div>
+    <p id="no-results" class="no-projects" hidden>No projects match your search and filters.</p>
     
     <section class="projects-cards" id="projects-cards">
 {cards_content}
@@ -1048,10 +1122,10 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       <table class="projects-table">
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Description</th>
-            <th>Path</th>
-            <th>Remote status</th>
+            <th scope="col" aria-sort="ascending"><button type="button" class="sort-button" data-sort="name" data-label="Name">Name <span class="sort-indicator" aria-hidden="true">↑</span></button></th>
+            <th scope="col">Description</th>
+            <th scope="col"><button type="button" class="sort-button" data-sort="path" data-label="Path">Path <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
+            <th scope="col"><button type="button" class="sort-button" data-sort="status" data-label="Remote status">Remote status <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
           </tr>
         </thead>
         <tbody id="projects-table">
@@ -1073,7 +1147,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         <span>per page</span>
       </div>
       <div class="page-info" id="page-info"></div>
-      <nav class="pagination" id="pagination"></nav>
+      <nav class="pagination" id="pagination" aria-label="Project pages"></nav>
     </div>
     
     <footer>
@@ -1085,6 +1159,9 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
     (function() {{
       // Elements
       const search = document.getElementById('search');
+      const statusFilter = document.getElementById('status-filter');
+      const noResults = document.getElementById('no-results');
+      const sortButtons = Array.from(document.querySelectorAll('.sort-button'));
       const cardsContainer = document.getElementById('projects-cards');
       const tableWrapper = document.getElementById('projects-table-wrapper');
       const tableBody = document.getElementById('projects-table');
@@ -1098,14 +1175,29 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       const pageInfo = document.getElementById('page-info');
       const paginationContainer = document.getElementById('pagination-container');
       
-      const totalCount = cards.length;
+      // Cards and rows are emitted in the same order by generate_html(). Keep
+      // the pair together through sorting, filtering, and page slicing.
+      const projects = cards.map((card, index) => ({{
+        card,
+        row: rows[index],
+        name: card.dataset.name,
+        path: card.dataset.path,
+        status: card.dataset.status,
+        statusLabel: card.dataset.statusLabel,
+        searchText: [card.dataset.name, card.dataset.summary, card.dataset.path]
+          .join(' ').toLowerCase(),
+      }}));
+      const totalCount = projects.length;
+      const collator = new Intl.Collator(undefined, {{ numeric: true, sensitivity: 'base' }});
       
       // State
       let currentView = localStorage.getItem('projectIndexView') || 'cards';
-      let perPage = parseInt(localStorage.getItem('projectIndexPerPage')) || 25;
+      const savedPerPage = localStorage.getItem('projectIndexPerPage');
+      let perPage = savedPerPage === 'all' ? Infinity : parseInt(savedPerPage) || 25;
       let currentPage = 1;
-      let filteredCards = [...cards];
-      let filteredRows = [...rows];
+      let sortColumn = 'name';
+      let sortDirection = 1;
+      let filteredProjects = [...projects];
       
       // Initialize per-page select
       if (perPage === Infinity || perPage > 100) {{
@@ -1137,34 +1229,58 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       btnTable.addEventListener('click', () => setView('table'));
       setView(currentView);
       
-      // Filter items based on search
+      // Sort the full collection before pagination, with deterministic name/path
+      // tie-breakers. Natural comparison puts Project 2 before Project 10 and
+      // Ahead 2 before Ahead 10. Reorder both DOM views only when sorting changes.
+      function sortProjects() {{
+        const field = sortColumn === 'status' ? 'statusLabel' : sortColumn;
+        projects.sort((a, b) => sortDirection * (
+          collator.compare(a[field], b[field]) ||
+          collator.compare(a.name, b.name) || collator.compare(a.path, b.path)
+        ));
+        const cardFragment = document.createDocumentFragment();
+        const rowFragment = document.createDocumentFragment();
+        projects.forEach(project => {{
+          cardFragment.appendChild(project.card);
+          rowFragment.appendChild(project.row);
+        }});
+        cardsContainer.appendChild(cardFragment);
+        tableBody.appendChild(rowFragment);
+
+        sortButtons.forEach(button => {{
+          const active = button.dataset.sort === sortColumn;
+          const header = button.closest('th');
+          if (active) {{
+            header.setAttribute('aria-sort', sortDirection === 1 ? 'ascending' : 'descending');
+          }} else {{
+            header.removeAttribute('aria-sort');
+          }}
+          button.querySelector('.sort-indicator').textContent = active
+            ? (sortDirection === 1 ? '↑' : '↓') : '↕';
+          const nextDirection = active && sortDirection === 1 ? 'descending' : 'ascending';
+          button.setAttribute('aria-label', `Sort by ${{button.dataset.label}}, ${{nextDirection}}`);
+        }});
+      }}
+
+      // Search and status are combined with AND, for both presentations.
       function filterItems() {{
         const query = search.value.toLowerCase().trim();
-        
-        filteredCards = cards.filter(card => {{
-          const name = card.dataset.name || '';
-          const summary = card.dataset.summary || '';
-          const path = card.querySelector('.path')?.textContent?.toLowerCase() || '';
-          return !query || name.includes(query) || summary.includes(query) || path.includes(query);
-        }});
-        
-        filteredRows = rows.filter(row => {{
-          const name = row.dataset.name || '';
-          const summary = row.dataset.summary || '';
-          const path = row.querySelector('.col-path')?.textContent?.toLowerCase() || '';
-          return !query || name.includes(query) || summary.includes(query) || path.includes(query);
-        }});
+        const status = statusFilter.value;
+        filteredProjects = projects.filter(project =>
+          (!query || project.searchText.includes(query)) &&
+          (!status || project.status === status)
+        );
       }}
       
       // Calculate pagination
       function getTotalPages() {{
         if (perPage === Infinity) return 1;
-        return Math.max(1, Math.ceil(filteredCards.length / perPage));
+        return Math.max(1, Math.ceil(filteredProjects.length / perPage));
       }}
       
       // Render pagination controls
       function renderPagination() {{
-        const total = filteredCards.length;
+        const total = filteredProjects.length;
         const totalPages = getTotalPages();
         
         // Hide pagination if no items or showing all
@@ -1181,7 +1297,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         let html = '';
         
         // Previous button
-        html += `<button ${{currentPage === 1 ? 'disabled' : ''}} data-page="${{currentPage - 1}}">&laquo;</button>`;
+        html += `<button aria-label="Previous page" ${{currentPage === 1 ? 'disabled' : ''}} data-page="${{currentPage - 1}}">&laquo;</button>`;
         
         // Page numbers
         const maxVisible = 5;
@@ -1198,7 +1314,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         }}
         
         for (let i = startPage; i <= endPage; i++) {{
-          html += `<button class="${{i === currentPage ? 'active' : ''}}" data-page="${{i}}">${{i}}</button>`;
+          html += `<button class="${{i === currentPage ? 'active' : ''}}" ${{i === currentPage ? 'aria-current="page"' : ''}} data-page="${{i}}">${{i}}</button>`;
         }}
         
         if (endPage < totalPages) {{
@@ -1207,7 +1323,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         }}
         
         // Next button
-        html += `<button ${{currentPage === totalPages ? 'disabled' : ''}} data-page="${{currentPage + 1}}">&raquo;</button>`;
+        html += `<button aria-label="Next page" ${{currentPage === totalPages ? 'disabled' : ''}} data-page="${{currentPage + 1}}">&raquo;</button>`;
         
         paginationNav.innerHTML = html;
       }}
@@ -1215,15 +1331,17 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       // Show items for current page
       function showPage() {{
         const start = perPage === Infinity ? 0 : (currentPage - 1) * perPage;
-        const end = perPage === Infinity ? filteredCards.length : start + perPage;
+        const end = perPage === Infinity ? filteredProjects.length : start + perPage;
         
         // Hide all first
         cards.forEach(c => c.classList.add('hidden'));
         rows.forEach(r => r.classList.add('hidden'));
         
         // Show filtered items for current page
-        filteredCards.slice(start, end).forEach(c => c.classList.remove('hidden'));
-        filteredRows.slice(start, end).forEach(r => r.classList.remove('hidden'));
+        filteredProjects.slice(start, end).forEach(project => {{
+          project.card.classList.remove('hidden');
+          project.row.classList.remove('hidden');
+        }});
       }}
       
       // Update display
@@ -1238,10 +1356,12 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         showPage();
         renderPagination();
         
-        // Update results count for search
+        // Announce status-only filtering too, and give empty searches a visible
+        // message while preserving the static empty-index placeholder.
+        noResults.hidden = filteredProjects.length > 0 || totalCount === 0;
         const query = search.value.trim();
-        if (query) {{
-          resultsCount.textContent = `Found ${{filteredCards.length}} of ${{totalCount}} projects`;
+        if (query || statusFilter.value) {{
+          resultsCount.textContent = `Found ${{filteredProjects.length}} of ${{totalCount}} projects`;
         }} else {{
           resultsCount.textContent = '';
         }}
@@ -1252,6 +1372,20 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
         currentPage = 1;
         updateDisplay();
       }});
+
+      statusFilter.addEventListener('change', () => {{
+        currentPage = 1;
+        updateDisplay();
+      }});
+
+      sortButtons.forEach(button => button.addEventListener('click', () => {{
+        const column = button.dataset.sort;
+        sortDirection = column === sortColumn ? -sortDirection : 1;
+        sortColumn = column;
+        currentPage = 1;
+        sortProjects();
+        updateDisplay();
+      }}));
       
       perPageSelect.addEventListener('change', (e) => {{
         const val = e.target.value;
@@ -1269,15 +1403,26 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       paginationNav.addEventListener('click', (e) => {{
         const btn = e.target.closest('button');
         if (btn && !btn.disabled) {{
-          currentPage = parseInt(btn.dataset.page);
+          const page = parseInt(btn.dataset.page);
+          if (page === currentPage) return;
+          // Keep the footer controls at the same viewport position even when
+          // the next page has different row heights or fewer items. Measuring
+          // after rendering also accounts for the browser's scroll anchoring.
+          const previousTop = paginationContainer.getBoundingClientRect().top;
+          currentPage = page;
           updateDisplay();
-          window.scrollTo({{ top: 0, behavior: 'smooth' }});
+          window.scrollBy(0, paginationContainer.getBoundingClientRect().top - previousTop);
+          paginationNav.querySelector('[aria-current="page"]')?.focus({{ preventScroll: true }});
         }}
       }});
       
       // Keyboard shortcuts
       document.addEventListener('keydown', e => {{
-        if (e.key === '/' && document.activeElement !== search) {{
+        // Native select arrow keys must change the status/page-size control,
+        // and typing in any input must never trigger page navigation.
+        if (e.target.closest('input, select, textarea, [contenteditable="true"]') ||
+            e.altKey || e.ctrlKey || e.metaKey) return;
+        if (e.key === '/') {{
           e.preventDefault();
           search.focus();
         }}
@@ -1294,6 +1439,7 @@ def generate_html(cache: dict, title: str, root: Path) -> str:
       }});
       
       // Initial render
+      sortProjects();
       updateDisplay();
     }})();
   </script>
@@ -1460,4 +1606,3 @@ Examples:
 
 if __name__ == '__main__':
     main()
-

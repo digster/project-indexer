@@ -11,19 +11,35 @@ per-project **remote sync status**.
   vanilla CSS/JS (no frameworks, no build step).
 - **Incremental scanning** — only re-parses READMEs whose `mtime`/`size` changed,
   via a JSON cache (`.project_index_cache.json`).
-- **Two views** — card grid and a sortable-feeling table, toggle persisted in
+- **Two views** — card grid and a sortable table, toggle persisted in
   `localStorage`.
 - **Client-side search & pagination** — filter by name/description/path; choose
-  10/25/50/100/all per page.
+  10/25/50/100/all per page. Page buttons keep the pagination controls in place.
+- **Column sorting** — click Name, Path, or Remote status to toggle ascending /
+  descending order; Description is not sortable. Sorting applies to all results
+  before pagination and carries over to cards. Text is case-insensitive and
+  numbers sort naturally (`Project 2` before `Project 10`, `Ahead 2` before
+  `Ahead 10`). Remote status sorts by its displayed label, with name/path ties.
+- **Remote status filter** — combine the status dropdown with search in either
+  view. Changing a filter or sort starts at page 1; empty results are announced.
 - **Dark/light theme** — follows the OS `prefers-color-scheme`.
 - **Remote sync status (table)** — shows whether each project's local git branch
   is in sync with its remote tracking branch.
 
 ## Usage
 
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/), then run
+from this checkout. uv manages the Python environment and dependencies;
+`.python-version` selects Python 3.12 for development (the script supports 3.9+).
+
 ```bash
-python3 project_indexer.py [OPTIONS]
+uv sync --locked
+uv run project_indexer.py [OPTIONS]
 ```
+
+`uv.lock` is checked in for reproducible development installs. No manual virtual
+environment activation or pip install is needed. Git is optional and is used
+only to collect remote sync status.
 
 | Option | Description |
 | --- | --- |
@@ -39,13 +55,13 @@ python3 project_indexer.py [OPTIONS]
 
 ```bash
 # Index the current directory
-python3 project_indexer.py
+uv run project_indexer.py
 
 # Index a specific directory with a custom title
-python3 project_indexer.py --root ~/projects --title "My Projects"
+uv run project_indexer.py --root ~/projects --title "My Projects"
 
 # Refresh remote-tracking refs over the network before computing sync status
-python3 project_indexer.py --root ~/projects --fetch
+uv run project_indexer.py --root ~/projects --fetch
 ```
 
 ## Remote sync status column
@@ -77,11 +93,30 @@ repository that *contains* each project directory.
 Tests use [`uv`](https://docs.astral.sh/uv/) and `pytest`:
 
 ```bash
-uv run pytest            # or: uv run --with pytest pytest -q
+uv sync --locked
+uv run --locked pytest -q
+uv lock --check
 ```
 
 The git-status tests build real (but local, offline) repositories using a bare
-repo as a stand-in remote, so no network access is required.
+repo as a stand-in remote, so no network access is required. HTML tests check
+filter coverage, shared metadata, escaping, and accessible sorting controls.
+
+For real-browser regression tests, generate and serve disposable fixtures:
+
+```bash
+uv run python -m tests.browser_fixture /tmp/project-indexer-ui
+uv run python -m http.server 8765 --bind 127.0.0.1 --directory /tmp/project-indexer-ui
+```
+
+Open [browser checks](http://127.0.0.1:8765/checks.html) to run the 11 interaction
+checks and see their results, or [the sample index](http://127.0.0.1:8765/index.html)
+to test manually. See [the browser checklist](tests/BROWSER_CHECKS.md) for
+additional edge cases. Browser checks use native DOM APIs and require no extra
+test dependencies.
+
+Regenerate any existing index with `uv run project_indexer.py --root PATH` to
+pick up UI changes; previously generated HTML is a static snapshot.
 
 ## License
 

@@ -7,11 +7,13 @@ requires-python = ">=3.9"
 dependencies = []
 
 [dependency-groups]
+# uv sync / uv run include this development group by default. The generated
+# index and the scanner itself still have no third-party runtime dependencies.
 dev = ["pytest>=8"]
 
 [tool.uv]
 # The indexer is a single standalone script, not an installable package — don't
-# let uv try to build/install it into the test environment.
+# let uv try to build/install it into the project environment.
 package = false
 
 [tool.pytest.ini_options]

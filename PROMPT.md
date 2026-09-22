@@ -17,3 +17,20 @@ Outcome: fixed the horizontal scrollbar. Root cause was the space-free path in
 default `table-layout: auto`, pushing the table past the `1200px` container.
 Added `overflow-wrap: anywhere;` to `.col-path` (and `.col-summary` as a guard).
 Playwright-verified no overflow; long paths now wrap.
+
+## 2026-09-22
+
+> - Update the project to use uv.
+> - Whenever the pagination at the bottom of the page is clicked, it scrolls the page up to the top.
+> - add a column sorting option for all columns except description, also add a remote status filtering option.
+
+Clarification asked: "Pagination already scrolls to the top in the current code.
+Should I remove that jump and keep you near the pagination controls when changing pages?"
+
+> Yes, keep my position near the pagination controls
+
+Outcome: standardized setup/run/test instructions and the script shebang on uv,
+pinned development Python to 3.12, preserved footer position on pagination,
+added Name/Path/Remote status sorting and shared status filtering in both views.
+Added generated-HTML tests, a repeatable real-browser regression suite, updated
+architecture/usage documentation, and recorded the work in memory.

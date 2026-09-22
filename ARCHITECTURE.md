@@ -59,16 +59,53 @@ light)` blocks, with translucent fills via `color-mix()`.
 
 ## Output HTML
 
-`generate_html()` emits one templated string. All interactivity (search, view
-toggle, pagination) is vanilla JS embedded at the bottom and operates on `data-*`
-attributes on each row/card (`data-name`, `data-summary`, `data-status`), so the
-markup and the client logic stay decoupled. Theme is driven entirely by
+`generate_html()` emits one templated string. All interactivity (search, status
+filtering, column sorting, view toggle, pagination) is vanilla JS embedded at the
+bottom. Cards and rows receive the same escaped `data-name`, `data-summary`,
+`data-path`, `data-status`, and `data-status-label` attributes. The client pairs
+them into one project collection in their initial generated order, so both
+views always share the same filtering, ordering, and page slice.
+
+Sorting reorders the complete collection and both DOM containers only when the
+sort changes. `Intl.Collator` supplies case-insensitive natural ordering;
+status sorts by the visible badge label (including numeric counts), then name
+and path break ties. Description has no sort control. Search and exact status
+filters combine with AND; changes to search, status, sort, or page size reset
+the current page. Header buttons expose the current direction through
+`aria-sort`, and a live region reports filtered counts.
+
+Page-button clicks preserve the pagination container's viewport position by
+measuring it before/after rendering and adjusting the scroll by the difference.
+This accounts for browser scroll anchoring and pages with unequal heights;
+native viewport limits still apply when a page is too short to scroll. Rebuilt
+pagination restores focus to the current-page button with `preventScroll`.
+Global keyboard shortcuts ignore form controls so dropdown arrow keys work.
+
+Theme is driven entirely by
 `prefers-color-scheme` (no toggle), and view/per-page preferences persist in
-`localStorage`.
+`localStorage` (including the `all` page-size value). Sort and filter state are
+session-only and reset on reload.
+
+## Python environment
+
+uv owns the local `.venv`; `.python-version` selects Python 3.12 by default and
+`pyproject.toml` retains compatibility with 3.9+. `package = false` keeps the
+single script un-packaged, with no runtime dependencies; pytest lives in the
+default dev dependency group. Use `uv sync --locked` to install the checked-in
+`uv.lock`, `uv run project_indexer.py` to scan, and `uv lock --check` to validate
+dependency metadata. The script's shebang also uses uv for direct execution.
 
 ## Tests
 
 `tests/test_git_status.py` exercises every git state by constructing real
 repositories in a temp dir with a local **bare** repo as the "remote" — fully
 offline, including the `--fetch` path (fetching from a file path needs no
-network). Run with `uv run pytest`.
+network). Run with `uv run --locked pytest -q`.
+
+`tests/test_html.py` parses generated output with `html.parser` to test escaped
+shared metadata, filter coverage for all git states, empty indexes, and
+accessible sorting controls. `tests/browser_fixture.py` builds disposable HTML
+fixtures, including a copy with `tests/browser_checks.js` appended. That test
+runner exercises the real generated DOM, sorting/filter interactions, focus,
+and scrolling using native browser APIs; it never ships in production output.
+See `tests/BROWSER_CHECKS.md` for commands and extra manual coverage.
